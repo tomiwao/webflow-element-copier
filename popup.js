@@ -19,29 +19,46 @@
   // Initialize
   checkCurrentState();
 
+  // Inject content script + CSS into tab if not already present.
+  // Returns true on success, false if the tab is an un-injectable page.
+  async function ensureContentScript(tab) {
+    if (!tab || !tab.id) return false;
+    if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') ||
+        tab.url.startsWith('about:') || tab.url.startsWith('edge://')) {
+      showToast('Cannot run on browser pages', true);
+      return false;
+    }
+    // Ping the content script — if it responds, it's already loaded
+    try {
+      await chrome.tabs.sendMessage(tab.id, { action: 'ping' });
+      return true;
+    } catch (_) {
+      // Not loaded yet — inject programmatically
+    }
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+      await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: ['content.css'] });
+      return true;
+    } catch (err) {
+      console.error('Could not inject content script:', err);
+      showToast('Cannot access this page', true);
+      return false;
+    }
+  }
+
   // Select element button
   selectBtn.addEventListener('click', async function() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    
-    if (!tab || !tab.id) {
-      showToast('Cannot access this page', true);
-      return;
-    }
 
-    // Check if we can inject into this page
-    if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
-      showToast('Cannot select on browser pages', true);
-      return;
-    }
+    if (!(await ensureContentScript(tab))) return;
 
     try {
-      // Send message to content script to start selection
       await chrome.tabs.sendMessage(tab.id, { action: 'startSelection' });
-      
+
       setStatus('selecting', 'Selecting...');
       selectBtn.textContent = 'Click an element on the page';
       selectBtn.disabled = true;
-      
+
       // Close popup so user can select
       window.close();
     } catch (error) {
@@ -169,10 +186,7 @@
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-      if (!tab || !tab.id || tab.url.startsWith('chrome://')) {
-        showToast('Cannot access this page', true);
-        return;
-      }
+      if (!(await ensureContentScript(tab))) return;
 
       copyPageBtn.disabled = true;
       copyPageBtn.textContent = 'Copying...';

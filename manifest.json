@@ -5,7 +5,8 @@
   "description": "Copy any element from any website and paste it directly into Webflow Designer",
   "permissions": [
     "activeTab",
-    "clipboardWrite"
+    "clipboardWrite",
+    "scripting"
   ],
   "action": {
     "default_popup": "popup.html",

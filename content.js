@@ -17,6 +17,10 @@
   // Listen for messages from popup
   chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
     switch (request.action) {
+      case 'ping':
+        sendResponse({ ok: true });
+        break;
+
       case 'startSelection':
         startSelection();
         sendResponse({ success: true });
