@@ -32,7 +32,8 @@
       case 'copyToWebflow':
         if (selectedElement) {
           try {
-            const json = generateWebflowJSON(selectedElement);
+            const options = { usePageStyles: request.usePageStyles !== false };
+            const json = generateWebflowJSON(selectedElement, options);
             copyToClipboard(json);
             sendResponse({ success: true });
           } catch (error) {
@@ -46,9 +47,10 @@
 
       case 'copyFullPage':
         try {
+          const options = { usePageStyles: request.usePageStyles !== false };
           // Use <main> if present, otherwise <body>
           const root = document.querySelector('main') || document.body;
-          const json = generateWebflowJSON(root);
+          const json = generateWebflowJSON(root, options);
           copyToClipboard(json);
           sendResponse({ success: true });
         } catch (error) {
@@ -257,17 +259,88 @@
     return styles.size;
   }
 
+  // ── Stylesheet-based style extraction ──────────────────────────────────────
+
+  // Build a map of  className → [cssText, ...]  from all accessible stylesheets.
+  // Called once per generateWebflowJSON run so we only walk the sheets once.
+  function buildClassStyleMap() {
+    var map = new Map();
+    for (var si = 0; si < document.styleSheets.length; si++) {
+      try {
+        walkRules(document.styleSheets[si].cssRules || [], map);
+      } catch (e) {
+        // Cross-origin sheet — skip silently
+      }
+    }
+    return map;
+  }
+
+  function walkRules(rules, map) {
+    for (var ri = 0; ri < rules.length; ri++) {
+      var rule = rules[ri];
+      if (rule.type === 1 /* CSSStyleRule */ && rule.selectorText && rule.style.cssText) {
+        var selectors = rule.selectorText.split(',');
+        for (var si = 0; si < selectors.length; si++) {
+          var sel = selectors[si].trim();
+          // Skip pseudo-elements
+          if (sel.indexOf('::') !== -1) continue;
+          // Target = rightmost compound selector (after combinators)
+          var lastPart = sel.split(/[\s>+~]+/).pop().trim();
+          // Strip pseudo-classes (:hover etc.) from target
+          var base = lastPart.split(':')[0];
+          var classMatches = base.match(/\.(-?[a-zA-Z_][\w-]*)/g);
+          if (!classMatches) continue;
+          for (var ci = 0; ci < classMatches.length; ci++) {
+            var className = classMatches[ci].slice(1);
+            if (!map.has(className)) { map.set(className, []); }
+            map.get(className).push(rule.style.cssText);
+          }
+        }
+      } else if (rule.cssRules) {
+        // @media, @supports, @layer — recurse
+        try { walkRules(rule.cssRules, map); } catch (e) {}
+      }
+    }
+  }
+
+  // Return CSS text for a class from the stylesheet map,
+  // falling back to filtered computed styles if not found.
+  function getStylesForClass(className, element, classStyleMap) {
+    if (classStyleMap && classStyleMap.has(className)) {
+      // Deduplicate identical rule blocks then join
+      var rules = classStyleMap.get(className);
+      var seen = [];
+      var unique = [];
+      for (var i = 0; i < rules.length; i++) {
+        if (seen.indexOf(rules[i]) === -1) { seen.push(rules[i]); unique.push(rules[i]); }
+      }
+      return unique.join(' ');
+    }
+    // Fallback: computed styles (strip etw- classes first so highlight doesn't bleed)
+    var etwClasses = Array.from(element.classList).filter(function(c) { return c.startsWith('etw-'); });
+    etwClasses.forEach(function(c) { element.classList.remove(c); });
+    var styleString = extractRelevantStyles(window.getComputedStyle(element));
+    etwClasses.forEach(function(c) { element.classList.add(c); });
+    return styleString;
+  }
+
+  // ── Core JSON generation ─────────────────────────────────────────────────
+
   // Generate Webflow-compatible JSON
-  function generateWebflowJSON(element) {
-    const nodes = [];
-    const styles = [];
-    const styleMap = new Map(); // className -> styleId
+  function generateWebflowJSON(element, options) {
+    options = options || {};
+    var nodes = [];
+    var styles = [];
+    var styleMap = new Map(); // className -> styleId
+
+    // Build the class→CSS map once (used when usePageStyles is true or by default)
+    var classStyleMap = (options.usePageStyles !== false) ? buildClassStyleMap() : null;
 
     // Process element and all descendants
-    processElement(element, null, nodes, styles, styleMap);
+    processElement(element, null, nodes, styles, styleMap, classStyleMap);
 
     // Build the final JSON structure
-    const webflowJSON = {
+    var webflowJSON = {
       type: '@webflow/XscpData',
       payload: {
         nodes: nodes,
@@ -282,35 +355,25 @@
   }
 
   // Process a single element
-  function processElement(element, parentId, nodes, styles, styleMap) {
-    const nodeId = generateId();
-    const tag = element.tagName.toLowerCase();
-    const childIds = [];
+  function processElement(element, parentId, nodes, styles, styleMap, classStyleMap) {
+    var nodeId = generateId();
+    var tag = element.tagName.toLowerCase();
+    var childIds = [];
 
     // Get classes (excluding our own)
-    const classes = Array.from(element.classList).filter(function(c) {
+    var classes = Array.from(element.classList).filter(function(c) {
       return !c.startsWith('etw-');
     });
 
     // Process classes and create styles
-    const classIds = [];
+    var classIds = [];
     classes.forEach(function(className) {
       if (!styleMap.has(className)) {
-        const styleId = generateId();
+        var styleId = generateId();
         styleMap.set(className, styleId);
-        
-        // Temporarily remove etw- classes so highlight/selected colours
-        // don't bleed into the captured computed styles
-        const etwClasses = Array.from(element.classList).filter(function(c) {
-          return c.startsWith('etw-');
-        });
-        etwClasses.forEach(function(c) { element.classList.remove(c); });
 
-        const computedStyle = window.getComputedStyle(element);
-        const styleString = extractRelevantStyles(computedStyle);
+        var styleString = getStylesForClass(className, element, classStyleMap);
 
-        etwClasses.forEach(function(c) { element.classList.add(c); });
-        
         styles.push({
           _id: styleId,
           fake: false,
@@ -330,7 +393,7 @@
 
     // Process child elements first to get their IDs
     Array.from(element.children).forEach(function(child) {
-      const childId = processElement(child, nodeId, nodes, styles, styleMap);
+      var childId = processElement(child, nodeId, nodes, styles, styleMap, classStyleMap);
       childIds.push(childId);
     });
 

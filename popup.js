@@ -7,6 +7,7 @@
   const selectBtn = document.getElementById('selectBtn');
   const copyBtn = document.getElementById('copyBtn');
   const copyPageBtn = document.getElementById('copyPageBtn');
+  const usePageStylesToggle = document.getElementById('usePageStyles');
   const statusDot = document.getElementById('statusDot');
   const statusText = document.getElementById('statusText');
   const selectedInfo = document.getElementById('selectedInfo');
@@ -60,8 +61,9 @@
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       
       // Request the Webflow JSON from content script
-      const response = await chrome.tabs.sendMessage(tab.id, { 
-        action: 'copyToWebflow'
+      const response = await chrome.tabs.sendMessage(tab.id, {
+        action: 'copyToWebflow',
+        usePageStyles: usePageStylesToggle.checked
       });
 
       if (response && response.success) {
@@ -175,7 +177,10 @@
       copyPageBtn.disabled = true;
       copyPageBtn.textContent = 'Copying...';
 
-      const response = await chrome.tabs.sendMessage(tab.id, { action: 'copyFullPage' });
+      const response = await chrome.tabs.sendMessage(tab.id, {
+        action: 'copyFullPage',
+        usePageStyles: usePageStylesToggle.checked
+      });
 
       if (response && response.success) {
         copyPageBtn.innerHTML = `
