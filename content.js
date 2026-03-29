@@ -417,7 +417,6 @@
   function processElement(element, parentId, nodes, styles, styleMap, classStyleMap) {
     var nodeId = generateId();
     var tag = element.tagName.toLowerCase();
-    var childIds = [];
 
     // Get classes (excluding our own)
     var classes = Array.from(element.classList).filter(function(c) {
@@ -430,9 +429,7 @@
       if (!styleMap.has(className)) {
         var styleId = generateId();
         styleMap.set(className, styleId);
-
         var styleString = getStylesForClass(className, element, classStyleMap);
-
         styles.push({
           _id: styleId,
           fake: false,
@@ -450,35 +447,33 @@
       classIds.push(styleMap.get(className));
     });
 
-    // Process child elements first to get their IDs
-    Array.from(element.children).forEach(function(child) {
-      var childId = processElement(child, nodeId, nodes, styles, styleMap, classStyleMap);
-      childIds.push(childId);
-    });
+    var nodeType = getWebflowNodeType(element);
+    var nodeData = buildNodeData(element, tag, nodeType);
 
-    // Determine node type and build data
-    const nodeType = getWebflowNodeType(element);
-    const nodeData = buildNodeData(element, tag, nodeType);
-
-    // Build the node
-    const node = {
+    // Push THIS node before recursing into children so nodes[0] is always
+    // the root element — Webflow uses the first node in the array as the paste root.
+    var node = {
       _id: nodeId,
       type: nodeType,
       tag: tag,
       classes: classIds,
-      children: childIds,
+      children: [], // filled in below
       data: nodeData
     };
 
-    // Handle text content for text nodes
     if (shouldIncludeText(element)) {
-      const textContent = getDirectTextContent(element);
-      if (textContent) {
-        node.v = textContent;
-      }
+      var textContent = getDirectTextContent(element);
+      if (textContent) { node.v = textContent; }
     }
 
     nodes.push(node);
+
+    // Process children AFTER pushing parent; mutate node.children in place
+    Array.from(element.children).forEach(function(child) {
+      var childId = processElement(child, nodeId, nodes, styles, styleMap, classStyleMap);
+      node.children.push(childId);
+    });
+
     return nodeId;
   }
 
@@ -495,7 +490,6 @@
 
     const typeMap = {
       'img': 'Image',
-      'video': 'Video',
       'a': 'Link',
       'form': 'FormWrapper',
       'input': 'FormTextInput',
@@ -510,35 +504,24 @@
       'h5': 'Heading',
       'h6': 'Heading',
       'p': 'Paragraph',
-      'blockquote': 'Blockquote',
       'ul': 'List',
       'ol': 'List',
-      'li': 'ListItem',
-      'nav': 'Block',
-      'section': 'Block',
-      'article': 'Block',
-      'header': 'Block',
-      'footer': 'Block',
-      'main': 'Block',
-      'aside': 'Block',
-      'figure': 'Figure',
-      'figcaption': 'Block',
-      'span': 'Block',
-      'div': 'Block',
-      'iframe': 'HtmlEmbed'
+      'li': 'ListItem'
+      // Everything else falls through to Block
     };
 
     return typeMap[tag] || 'Block';
   }
 
-  // Build node data object
+  // Build node data object — only include fields Webflow actually understands
   function buildNodeData(element, tag, nodeType) {
-    const data = {
-      tag: tag,
-      text: isTextElement(element)
-    };
+    const data = {};
 
-    // Handle specific element types
+    // Headings need data.tag to know which level (h1–h6)
+    if (nodeType === 'Heading') {
+      data.tag = tag;
+    }
+
     if (tag === 'img') {
       data.attr = {
         src: element.src || '',
@@ -547,47 +530,20 @@
       };
     } else if (tag === 'a') {
       data.attr = {
-        href: element.href || '#'
+        href: element.getAttribute('href') || '#'
       };
-      if (element.target) {
-        data.attr.target = element.target;
-      }
-    } else if (tag === 'video') {
-      data.attr = {
-        src: element.src || ''
-      };
-      if (element.poster) {
-        data.attr.poster = element.poster;
-      }
-      data.autoplay = element.autoplay || false;
-      data.loop = element.loop || false;
-      data.muted = element.muted || false;
+      if (element.target) { data.attr.target = element.target; }
     } else if (tag === 'input') {
       data.attr = {
         type: element.type || 'text',
         name: element.name || '',
         placeholder: element.placeholder || ''
       };
-    } else if (tag === 'iframe') {
-      data.embed = {
-        type: 'custom',
-        meta: {
-          html: element.outerHTML
-        }
-      };
     }
 
-    // Add ID if present
-    if (element.id) {
-      data.attr = data.attr || {};
-      data.attr.id = element.id;
-    }
-
-    // Add custom attributes
+    // Custom data-* attributes
     const customAttrs = getCustomAttributes(element);
-    if (customAttrs.length > 0) {
-      data.xattr = customAttrs;
-    }
+    if (customAttrs.length > 0) { data.xattr = customAttrs; }
 
     return data;
   }
