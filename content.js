@@ -263,9 +263,68 @@
     return styles.size;
   }
 
+  // ── Shared property whitelist ────────────────────────────────────────────
+  // Used by both computed-style and stylesheet extractors so they produce
+  // identical, Webflow-safe property sets.
+  var RELEVANT_PROPS = [
+    'display', 'position', 'top', 'right', 'bottom', 'left', 'z-index',
+    'float', 'clear', 'overflow', 'overflow-x', 'overflow-y',
+    'flex-direction', 'flex-wrap', 'justify-content', 'align-items', 'align-content',
+    'flex-grow', 'flex-shrink', 'flex-basis', 'align-self', 'order', 'gap',
+    'grid-template-columns', 'grid-template-rows', 'grid-gap', 'grid-column', 'grid-row',
+    'width', 'height', 'min-width', 'min-height', 'max-width', 'max-height',
+    'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+    'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+    'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+    'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
+    'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
+    'border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius', 'border-bottom-left-radius',
+    'background-color', 'background-image', 'background-position', 'background-size',
+    'background-repeat', 'background-attachment',
+    'font-family', 'font-size', 'font-weight', 'font-style', 'line-height',
+    'letter-spacing', 'text-align', 'text-decoration', 'text-transform',
+    'color', 'white-space', 'word-break', 'word-spacing',
+    'opacity', 'box-shadow', 'text-shadow', 'transform', 'filter',
+    'cursor', 'visibility', 'object-fit', 'object-position'
+  ];
+
+  // Extract whitelisted properties from a CSSStyleDeclaration (rule style, not computed).
+  // Less aggressive filtering than extractRelevantStyles — authored 0/none values are kept.
+  function extractStylesFromRuleStyle(ruleStyle) {
+    var entries = [];
+    for (var pi = 0; pi < RELEVANT_PROPS.length; pi++) {
+      var prop = RELEVANT_PROPS[pi];
+      var value = ruleStyle.getPropertyValue(prop);
+      if (value && value.trim()) {
+        entries.push(prop + ': ' + value.trim());
+      }
+    }
+    return entries.join('; ') + (entries.length > 0 ? ';' : '');
+  }
+
+  // Merge an array of CSS strings into one, with later declarations winning on conflict.
+  function mergeStyleStrings(strings) {
+    var propMap = new Map();
+    for (var i = 0; i < strings.length; i++) {
+      var decls = strings[i].split(';');
+      for (var j = 0; j < decls.length; j++) {
+        var decl = decls[j].trim();
+        if (!decl) continue;
+        var colon = decl.indexOf(':');
+        if (colon === -1) continue;
+        var prop = decl.slice(0, colon).trim();
+        var val = decl.slice(colon + 1).trim();
+        if (prop && val) { propMap.set(prop, val); }
+      }
+    }
+    var result = [];
+    propMap.forEach(function(val, prop) { result.push(prop + ': ' + val); });
+    return result.join('; ') + (result.length > 0 ? ';' : '');
+  }
+
   // ── Stylesheet-based style extraction ──────────────────────────────────────
 
-  // Build a map of  className → [cssText, ...]  from all accessible stylesheets.
+  // Build a map of  className → [filtered-css-string, ...]  from all accessible stylesheets.
   // Called once per generateWebflowJSON run so we only walk the sheets once.
   function buildClassStyleMap() {
     var map = new Map();
@@ -294,10 +353,12 @@
           var base = lastPart.split(':')[0];
           var classMatches = base.match(/\.(-?[a-zA-Z_][\w-]*)/g);
           if (!classMatches) continue;
+          var extracted = extractStylesFromRuleStyle(rule.style);
+          if (!extracted) continue;
           for (var ci = 0; ci < classMatches.length; ci++) {
             var className = classMatches[ci].slice(1);
             if (!map.has(className)) { map.set(className, []); }
-            map.get(className).push(rule.style.cssText);
+            map.get(className).push(extracted);
           }
         }
       } else if (rule.cssRules) {
@@ -311,14 +372,8 @@
   // falling back to filtered computed styles if not found.
   function getStylesForClass(className, element, classStyleMap) {
     if (classStyleMap && classStyleMap.has(className)) {
-      // Deduplicate identical rule blocks then join
-      var rules = classStyleMap.get(className);
-      var seen = [];
-      var unique = [];
-      for (var i = 0; i < rules.length; i++) {
-        if (seen.indexOf(rules[i]) === -1) { seen.push(rules[i]); unique.push(rules[i]); }
-      }
-      return unique.join(' ');
+      // Merge all rules for this class; later declarations win on property conflicts
+      return mergeStyleStrings(classStyleMap.get(className));
     }
     // Fallback: computed styles (strip etw- classes first so highlight doesn't bleed)
     var etwClasses = Array.from(element.classList).filter(function(c) { return c.startsWith('etw-'); });
@@ -430,7 +485,14 @@
   // Get Webflow node type based on HTML element
   function getWebflowNodeType(element) {
     const tag = element.tagName.toLowerCase();
-    
+
+    // Webflow's form-specific types are only valid inside a FormWrapper.
+    // Outside a <form>, treat these as generic Blocks so Webflow doesn't reject the paste.
+    const FORM_ONLY_TAGS = { button: 1, input: 1, textarea: 1, select: 1, label: 1 };
+    if (FORM_ONLY_TAGS[tag] && !element.closest('form')) {
+      return 'Block';
+    }
+
     const typeMap = {
       'img': 'Image',
       'video': 'Video',
@@ -567,50 +629,11 @@
     return attrs;
   }
 
-  // Extract relevant CSS styles from computed style
+  // Extract relevant CSS styles from computed style (fallback path)
   function extractRelevantStyles(computedStyle) {
-    const relevantProps = [
-      // Layout
-      'display', 'position', 'top', 'right', 'bottom', 'left', 'z-index',
-      'float', 'clear', 'overflow', 'overflow-x', 'overflow-y',
-      
-      // Flexbox
-      'flex-direction', 'flex-wrap', 'justify-content', 'align-items', 'align-content',
-      'flex-grow', 'flex-shrink', 'flex-basis', 'align-self', 'order', 'gap',
-      
-      // Grid
-      'grid-template-columns', 'grid-template-rows', 'grid-gap', 'grid-column', 'grid-row',
-      
-      // Box Model
-      'width', 'height', 'min-width', 'min-height', 'max-width', 'max-height',
-      'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
-      'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
-      
-      // Border
-      'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
-      'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
-      'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
-      'border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius', 'border-bottom-left-radius',
-      
-      // Background
-      'background-color', 'background-image', 'background-position', 'background-size',
-      'background-repeat', 'background-attachment',
-      
-      // Typography
-      'font-family', 'font-size', 'font-weight', 'font-style', 'line-height',
-      'letter-spacing', 'text-align', 'text-decoration', 'text-transform',
-      'color', 'white-space', 'word-break', 'word-spacing',
-      
-      // Effects
-      'opacity', 'box-shadow', 'text-shadow', 'transform', 'filter',
-      
-      // Misc
-      'cursor', 'visibility', 'object-fit', 'object-position'
-    ];
-
     const styleEntries = [];
-    
-    relevantProps.forEach(function(prop) {
+
+    RELEVANT_PROPS.forEach(function(prop) {
       const value = computedStyle.getPropertyValue(prop);
       if (value && value !== 'none' && value !== 'auto' && value !== 'normal' && 
           value !== '0px' && value !== 'rgba(0, 0, 0, 0)' && value !== 'transparent') {
