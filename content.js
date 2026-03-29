@@ -185,18 +185,37 @@
   }
 
   // ── Stylesheet-based CSS extraction ──────────────────────────────────────
-  // Properties to never pass to Webflow — vendor prefixes are handled by the
-  // prop[0] === '-' check; these are additional unsafe authored properties.
-  const SHEET_SKIP = {
-    content: 1, quotes: 1, 'counter-reset': 1, 'counter-increment': 1,
-    animation: 1, 'animation-name': 1, 'animation-duration': 1,
-    'animation-timing-function': 1, 'animation-delay': 1,
-    'animation-iteration-count': 1, 'animation-direction': 1,
-    'animation-fill-mode': 1, 'animation-play-state': 1,
-    transition: 1, 'transition-property': 1, 'transition-duration': 1,
-    'transition-timing-function': 1, 'transition-delay': 1,
-    'will-change': 1, 'pointer-events': 1, 'user-select': 1
-  };
+  // Longhand properties that Webflow understands in styleLess.
+  // Webflow's style engine only accepts longhand properties — shorthands like
+  // "padding" or "background" in styleLess crash its parser.
+  const RELEVANT_PROPS = [
+    'display', 'position', 'top', 'right', 'bottom', 'left', 'z-index',
+    'float', 'clear', 'overflow', 'overflow-x', 'overflow-y',
+    'flex-direction', 'flex-wrap', 'justify-content', 'align-items', 'align-content',
+    'flex-grow', 'flex-shrink', 'flex-basis', 'align-self', 'order', 'gap',
+    'grid-template-columns', 'grid-template-rows', 'grid-gap', 'grid-column', 'grid-row',
+    'width', 'height', 'min-width', 'min-height', 'max-width', 'max-height',
+    'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+    'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+    'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+    'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
+    'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
+    'border-top-left-radius', 'border-top-right-radius',
+    'border-bottom-right-radius', 'border-bottom-left-radius',
+    'background-color', 'background-image', 'background-position',
+    'background-size', 'background-repeat', 'background-attachment',
+    'font-family', 'font-size', 'font-weight', 'font-style', 'line-height',
+    'letter-spacing', 'text-align', 'text-decoration', 'text-transform',
+    'color', 'white-space', 'word-break', 'word-spacing',
+    'opacity', 'box-shadow', 'text-shadow', 'transform', 'filter',
+    'cursor', 'visibility', 'object-fit', 'object-position'
+  ];
+
+  // Detached element used to expand CSS shorthands → longhands.
+  // Applying a rule's cssText here and then reading individual longhands is
+  // the only reliable way to get longhand values when the author wrote
+  // shorthand (e.g. "padding: 40px" → padding-top/right/bottom/left).
+  const _expandEl = document.createElement('div');
 
   // Walk all stylesheets and build className → [css-string] map.
   function buildClassStyleMap() {
@@ -233,19 +252,23 @@
     }
   }
 
-  // Convert a rule's CSSStyleDeclaration to a safe CSS string.
-  // Reads authored property names (handles shorthands), skips unsafe values.
-  function ruleToSafeCSS(style) {
+  // Convert a CSS rule to a safe, longhand-only string for Webflow's styleLess.
+  // Strategy: apply the rule's cssText to a detached element's inline style —
+  // the browser expands all shorthands automatically. Then read each longhand
+  // from RELEVANT_PROPS. This guarantees only longhands reach Webflow.
+  function ruleToSafeCSS(ruleStyle) {
+    try {
+      _expandEl.style.cssText = '';
+      _expandEl.style.cssText = ruleStyle.cssText;
+    } catch (e) { return ''; }
+
     const entries = [];
-    for (let i = 0; i < style.length; i++) {
-      const prop = style[i];
-      if (prop[0] === '-') continue;             // vendor prefixes
-      if (prop.indexOf('--') === 0) continue;    // custom property definitions
-      if (SHEET_SKIP[prop]) continue;
-      const value = style.getPropertyValue(prop);
+    for (let i = 0; i < RELEVANT_PROPS.length; i++) {
+      const prop  = RELEVANT_PROPS[i];
+      const value = _expandEl.style.getPropertyValue(prop);
       if (!value || !value.trim()) continue;
-      if (value.indexOf('var(') !== -1) continue;          // CSS variable references
-      if (value.indexOf('base64') !== -1) continue;        // embedded images
+      if (value.indexOf('var(') !== -1) continue;   // unresolved CSS variable
+      if (value.indexOf('base64') !== -1) continue;  // embedded image data
       entries.push(prop + ': ' + value.trim());
     }
     return entries.join('; ') + (entries.length > 0 ? ';' : '');
@@ -459,31 +482,8 @@
   // Used when stylesheet extraction finds nothing for a class.
 
   function extractRelevantStyles(computedStyle) {
-    const relevantProps = [
-      'display', 'position', 'top', 'right', 'bottom', 'left', 'z-index',
-      'float', 'clear', 'overflow', 'overflow-x', 'overflow-y',
-      'flex-direction', 'flex-wrap', 'justify-content', 'align-items', 'align-content',
-      'flex-grow', 'flex-shrink', 'flex-basis', 'align-self', 'order', 'gap',
-      'grid-template-columns', 'grid-template-rows', 'grid-gap', 'grid-column', 'grid-row',
-      'width', 'height', 'min-width', 'min-height', 'max-width', 'max-height',
-      'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
-      'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
-      'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
-      'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
-      'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
-      'border-top-left-radius', 'border-top-right-radius',
-      'border-bottom-right-radius', 'border-bottom-left-radius',
-      'background-color', 'background-image', 'background-position',
-      'background-size', 'background-repeat', 'background-attachment',
-      'font-family', 'font-size', 'font-weight', 'font-style', 'line-height',
-      'letter-spacing', 'text-align', 'text-decoration', 'text-transform',
-      'color', 'white-space', 'word-break', 'word-spacing',
-      'opacity', 'box-shadow', 'text-shadow', 'transform', 'filter',
-      'cursor', 'visibility', 'object-fit', 'object-position'
-    ];
-
     const entries = [];
-    relevantProps.forEach(function(prop) {
+    RELEVANT_PROPS.forEach(function(prop) {
       const value = computedStyle.getPropertyValue(prop);
       if (!value || value === 'none' || value === 'auto' || value === 'normal' ||
           value === '0px' || value === 'rgba(0, 0, 0, 0)' || value === 'transparent') return;
